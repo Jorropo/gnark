@@ -112,17 +112,35 @@ func Prove(r1cs *backend_bls377.R1CS, pk *ProvingKey, solution map[string]interf
 
 	opt := curve.NewMultiExpOptions(runtime.NumCPU())
 
-	go func() {
-		var krs, p1 curve.G1Jac
-		// chDone := make(chan struct{}, 1)
-		// go func() {
-		// 	krs2.MultiExp(pk.G1.K[:nbPrivateWires], wireValues[:nbPrivateWires], opt)
-		// 	chDone <- struct{}{}
-		// }()
-		krs.MultiExp(append(pk.G1.Z, pk.G1.K[:nbPrivateWires]...), append(h, wireValues[:nbPrivateWires]...), opt)
+	computeBS1 := func() {
+		var bs1 curve.G1Jac
+		bs1.MultiExp(pk.G1.B, wireValues, opt)
+		bs1.AddMixed(&pk.G1.Beta)
+		bs1.AddMixed(&deltas[1])
+		bs1Affine.FromJacobian(&bs1)
+		chBs1Done <- struct{}{}
+	}
 
-		// <-chDone
-		// krs.AddAssign(&krs2)
+	computeAR1 := func() {
+		var ar curve.G1Jac
+		ar.MultiExp(pk.G1.A, wireValues, opt)
+		ar.AddMixed(&pk.G1.Alpha)
+		ar.AddMixed(&deltas[0])
+		proof.Ar.FromJacobian(&ar)
+		chArDone <- struct{}{}
+	}
+
+	computeKRS := func() {
+		var krs, krs2, p1 curve.G1Jac
+		chDone := make(chan struct{}, 1)
+		go func() {
+			krs2.MultiExp(pk.G1.Z, h, opt)
+			chDone <- struct{}{}
+		}()
+		krs.MultiExp(pk.G1.K[:nbPrivateWires], wireValues[:nbPrivateWires], opt)
+
+		<-chDone
+		krs.AddAssign(&krs2)
 		krs.AddMixed(&deltas[2])
 		<-chArDone
 		p1.ScalarMulGLV(&proof.Ar, &s)
@@ -134,10 +152,10 @@ func Prove(r1cs *backend_bls377.R1CS, pk *ProvingKey, solution map[string]interf
 		proof.Krs.FromJacobian(&krs)
 
 		chKrsDone <- struct{}{}
-	}()
+	}
 
 	chBS2Done := make(chan struct{}, 1)
-	go func() {
+	computeBS2 := func() {
 		// Bs2 (1 multi exp G2 - size = len(wires))
 		var Bs, deltaS curve.G2Jac
 
@@ -170,25 +188,12 @@ func Prove(r1cs *backend_bls377.R1CS, pk *ProvingKey, solution map[string]interf
 
 		proof.Bs.FromJacobian(&Bs)
 		chBS2Done <- struct{}{}
-	}()
+	}
 
-	go func() {
-		var bs1 curve.G1Jac
-		bs1.MultiExp(pk.G1.B, wireValues, opt)
-		bs1.AddMixed(&pk.G1.Beta)
-		bs1.AddMixed(&deltas[1])
-		bs1Affine.FromJacobian(&bs1)
-		chBs1Done <- struct{}{}
-	}()
-
-	go func() {
-		var ar curve.G1Jac
-		ar.MultiExp(pk.G1.A, wireValues, opt)
-		ar.AddMixed(&pk.G1.Alpha)
-		ar.AddMixed(&deltas[0])
-		proof.Ar.FromJacobian(&ar)
-		chArDone <- struct{}{}
-	}()
+	go computeBS2()
+	go computeKRS()
+	go computeAR1()
+	go computeBS1()
 
 	// wait for all parts of the proof to be computed.
 	<-chKrsDone
