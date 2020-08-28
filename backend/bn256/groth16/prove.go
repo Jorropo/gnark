@@ -113,16 +113,16 @@ func Prove(r1cs *backend_bn256.R1CS, pk *ProvingKey, solution map[string]interfa
 	opt := curve.NewMultiExpOptions(runtime.NumCPU())
 
 	go func() {
-		var krs, krs2, p1 curve.G1Jac
-		chDone := make(chan struct{}, 1)
-		go func() {
-			krs2.MultiExp(pk.G1.K[:nbPrivateWires], wireValues[:nbPrivateWires], opt)
-			chDone <- struct{}{}
-		}()
-		krs.MultiExp(pk.G1.Z, h, opt)
+		var krs, p1 curve.G1Jac
+		// chDone := make(chan struct{}, 1)
+		// go func() {
+		// 	krs2.MultiExp(pk.G1.K[:nbPrivateWires], wireValues[:nbPrivateWires], opt)
+		// 	chDone <- struct{}{}
+		// }()
+		krs.MultiExp(append(pk.G1.Z, pk.G1.K[:nbPrivateWires]...), append(h, wireValues[:nbPrivateWires]...), opt)
 
-		<-chDone
-		krs.AddAssign(&krs2)
+		// <-chDone
+		// krs.AddAssign(&krs2)
 		krs.AddMixed(&deltas[2])
 		<-chArDone
 		p1.ScalarMulGLV(&proof.Ar, &s)
@@ -141,12 +141,11 @@ func Prove(r1cs *backend_bn256.R1CS, pk *ProvingKey, solution map[string]interfa
 		// Bs2 (1 multi exp G2 - size = len(wires))
 		var Bs, deltaS curve.G2Jac
 
-		nn := len(pk.G2.B) / 4
+		nn := len(pk.G2.B) / 3
 		if nn > 10 {
 			chDone1 := make(chan struct{}, 1)
 			chDone2 := make(chan struct{}, 1)
-			chDone3 := make(chan struct{}, 1)
-			var bs1, bs2, bs3 curve.G2Jac
+			var bs1, bs2 curve.G2Jac
 			go func() {
 				bs1.MultiExp(pk.G2.B[:nn], wireValues[:nn], opt)
 				chDone1 <- struct{}{}
@@ -155,18 +154,12 @@ func Prove(r1cs *backend_bn256.R1CS, pk *ProvingKey, solution map[string]interfa
 				bs2.MultiExp(pk.G2.B[nn:nn*2], wireValues[nn:nn*2], opt)
 				chDone2 <- struct{}{}
 			}()
-			go func() {
-				bs3.MultiExp(pk.G2.B[nn*2:nn*3], wireValues[nn*2:nn*3], opt)
-				chDone3 <- struct{}{}
-			}()
-			Bs.MultiExp(pk.G2.B[nn*3:], wireValues[nn*3:], opt)
+			Bs.MultiExp(pk.G2.B[nn*2:], wireValues[nn*2:], opt)
 
 			<-chDone1
 			Bs.AddAssign(&bs1)
 			<-chDone2
 			Bs.AddAssign(&bs2)
-			<-chDone3
-			Bs.AddAssign(&bs3)
 		} else {
 			Bs.MultiExp(pk.G2.B[:], wireValues[:], opt)
 		}
