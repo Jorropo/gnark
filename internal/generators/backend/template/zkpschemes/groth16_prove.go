@@ -72,15 +72,7 @@ func Prove(r1cs *backend_{{toLower .Curve}}.R1CS, pk *ProvingKey, solution map[s
 	chArDone:= make(chan struct{}, 1)
 	chBs1Done := make(chan struct{}, 1)
 
-	// init a CPU semaphore with enough tokens
-	// note: it seems adding to the number of CPUs here, effectively making the MultiExp compete for resources
-	// yields better performances -- this needs to be re-checked on large circuits, as cache eviction cost may become very noticeable.
-	nCpus := runtime.NumCPU()
-	nCpus += nCpus/2
-	chCpus := make(chan struct{}, nCpus)
-	for i:=0; i < nCpus; i++ {
-		chCpus <- struct{}{}
-	}
+
 
 	var h []fr.Element
 	
@@ -88,7 +80,6 @@ func Prove(r1cs *backend_{{toLower .Curve}}.R1CS, pk *ProvingKey, solution map[s
 		// H (witness reduction / FFT part)
 		h = computeH(a, b, c, fftDomain)
 		h = append(h, wireValues[:nbPrivateWires]...)
-		h = curve.PartitionScalars(h)
 		chHDone <- struct{}{}
 	}()
 
@@ -98,37 +89,32 @@ func Prove(r1cs *backend_{{toLower .Curve}}.R1CS, pk *ProvingKey, solution map[s
 	// wait for FFT to end, as it uses (almost) all our CPUs
 	<-chHDone
 
-	// preprocess them once for the multiExps (Ar1, Bs1, Bs2)
-	processedWireValues := curve.PartitionScalars(wireValues)
-
 	// compute proof elements
 	// 4 multiexp + 1 FFT
 	proof := &Proof{}
 	var bs1Affine curve.G1Affine
 
-	
-	go func() {
-		var ar curve.G1Jac
-		ar.MultiExp(pk.G1.A, processedWireValues, curve.MultiExpOptions{IsPartitionned: true, ChCpus: chCpus})
-		ar.AddMixed(&pk.G1.Alpha)
-		ar.AddMixed(&deltas[0])
-		proof.Ar.FromJacobian(&ar)
-		chArDone <- struct{}{}
-	}()
-	
-
-	go func() {
-		var bs1 curve.G1Jac
-		bs1.MultiExp(pk.G1.B, processedWireValues, curve.MultiExpOptions{IsPartitionned: true, ChCpus: chCpus})
-		bs1.AddMixed(&pk.G1.Beta)
-		bs1.AddMixed(&deltas[1])
-		bs1Affine.FromJacobian(&bs1)
-		chBs1Done <- struct{}{}
-	}()
-
+	opt := curve.NewMultiExpOptions(runtime.NumCPU())
+	var Bs, deltaS curve.G2Jac
 	go func() {
 		var krs, p1 curve.G1Jac
-		krs.MultiExp( append(pk.G1.Z, pk.G1.K[:nbPrivateWires]...), h, curve.MultiExpOptions{IsPartitionned: true, ChCpus: chCpus})
+		go func() {
+			var ar curve.G1Jac
+			go func() {
+				var bs1 curve.G1Jac
+				bs1.MultiExp(pk.G1.B, wireValues, opt)
+				bs1.AddMixed(&pk.G1.Beta)
+				bs1.AddMixed(&deltas[1])
+				bs1Affine.FromJacobian(&bs1)
+				chBs1Done <- struct{}{}
+			}()
+			ar.MultiExp(pk.G1.A, wireValues, opt)
+			ar.AddMixed(&pk.G1.Alpha)
+			ar.AddMixed(&deltas[0])
+			proof.Ar.FromJacobian(&ar)
+			chArDone <- struct{}{}
+		}()
+		krs.MultiExp( append(pk.G1.Z, pk.G1.K[:nbPrivateWires]...), h, opt)
 		krs.AddMixed(&deltas[2])
 		<-chArDone
 		p1.ScalarMulGLV(&proof.Ar, &s)
@@ -142,10 +128,8 @@ func Prove(r1cs *backend_{{toLower .Curve}}.R1CS, pk *ProvingKey, solution map[s
 		chKrsDone <- struct{}{}
 	}()
 
-
 	// Bs2 (1 multi exp G2 - size = len(wires))
-	var Bs, deltaS curve.G2Jac
-	Bs.MultiExp(pk.G2.B, processedWireValues, curve.MultiExpOptions{IsPartitionned: true, ChCpus: chCpus})
+	Bs.MultiExp(pk.G2.B, wireValues, opt)
 	deltaS.ScalarMulGLV(&pk.G2.Delta, &s)
 	Bs.AddAssign(&deltaS)
 	Bs.AddMixed(&pk.G2.Beta)
