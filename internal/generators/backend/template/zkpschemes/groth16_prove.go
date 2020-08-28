@@ -124,19 +124,43 @@ func Prove(r1cs *backend_{{toLower .Curve}}.R1CS, pk *ProvingKey, solution map[s
 	chBS2Done := make(chan struct{}, 1)
 	go func() {
 		// Bs2 (1 multi exp G2 - size = len(wires))
-		var Bs, bs2, deltaS curve.G2Jac
-		chDone := make(chan struct{}, 1)
-		nn := len(pk.G2.B) / 2
-		go func() {
-			bs2.MultiExp(pk.G2.B[nn:], wireValues[nn:], opt)
-			chDone <- struct{}{}
-		}()
-		Bs.MultiExp(pk.G2.B[:nn], wireValues[:nn], opt)
-		<-chDone 
-		Bs.AddAssign(&bs2)
+		var Bs, deltaS curve.G2Jac
+	
+		nn := len(pk.G2.B) / 4
+		if nn > 10 {
+			chDone1 := make(chan struct{}, 1)
+			chDone2 := make(chan struct{}, 1)
+			chDone3 := make(chan struct{}, 1)
+			var bs1,bs2,bs3 curve.G2Jac
+			go func() {
+				bs1.MultiExp(pk.G2.B[:nn], wireValues[:nn], opt)
+				chDone1 <- struct{}{}
+			}()
+			go func() {
+				bs2.MultiExp(pk.G2.B[nn:nn*2], wireValues[nn:nn*2], opt)
+				chDone2 <- struct{}{}
+			}()
+			go func() {
+				bs3.MultiExp(pk.G2.B[nn*2:nn*3], wireValues[nn*2:nn*3], opt)
+				chDone3 <- struct{}{}
+			}()
+			Bs.MultiExp(pk.G2.B[nn*3:], wireValues[nn*3:], opt)
+			
+			<-chDone1 
+			Bs.AddAssign(&bs1)
+			<-chDone2
+			Bs.AddAssign(&bs2)
+			<-chDone3 
+			Bs.AddAssign(&bs3)
+		} else {
+			Bs.MultiExp(pk.G2.B[:], wireValues[:], opt)
+		}
+	
+		
 		deltaS.ScalarMulGLV(&pk.G2.Delta, &s)
 		Bs.AddAssign(&deltaS)
 		Bs.AddMixed(&pk.G2.Beta)
+
 		proof.Bs.FromJacobian(&Bs)
 		chBS2Done <- struct{}{}
 	}()
